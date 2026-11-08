@@ -346,7 +346,7 @@ function matchAppearanceStyles(stylesheet, appearance) {
     if (!stylesheet) return;
     let rules = appearanceMatchers.get(appearance);
     if (!rules) {
-        rules = Object.entries(appearance).map(target => {
+        rules = Object.entries(appearance).filter(([, rule]) => !rule.desktopOnly).map(target => {
             const css = normalizeAppearanceStyles(target[1].css);
             return { target, css, hides: css && "mobile" in target[1] && hideSelectors(css) };
         }).filter(rule => rule.css).sort((a, b) => b.css.length - a.css.length);
@@ -448,9 +448,11 @@ function inspectBetterDiscord(file, code, appearance, nativeEffects) {
         : createHash("sha256").update(code.replaceAll("\r\n", "\n"), "utf8").digest("hex");
     const review = reviewedBetterDiscordSources[sha256];
     if (review?.name === name && review.recipe === "native-effect" && !source.parseDiagnostics.length
-        && nativeEffects && Object.hasOwn(nativeEffects, review.effect)) {
+        && nativeEffects && Object.hasOwn(nativeEffects, review.effect)
+        && (!review.defaultHide || Object.hasOwn(appearance, review.defaultHide) && "mobile" in appearance[review.defaultHide])) {
         return { ...record, review: { ...review, sha256 }, capability: "native-effect",
             cx: ["plugin " + JSON.stringify(name) + ":", "  needs " + nativeEffects[review.effect].permission,
+                ...(review.defaultHide ? ["  needs appearance.hide", "  option hide " + review.defaultHide + " default-on"] : []),
                 "  use " + review.effect, ""].join("\n") };
     }
     if (review?.name === name && review.recipe === "send-confirmation" && !source.parseDiagnostics.length) {
@@ -813,7 +815,7 @@ function compileMobileFilter(name, file, plugin, source) {
 }
 
 function compileMobileClientCommands(file, plugin, source) {
-    if (!/^ios\/runtime\/src\/core\/plugins\/(?:atsomeone|friendinvites|inrole|readallnotifications|spotifysharecommands)\/index\.ts$/.test(file)
+    if (!/^ios\/runtime\/src\/core\/plugins\/(?:atsomeone|friendinvites|inrole|readallnotifications|scheduledmessages|spotifysharecommands|translate)\/index\.ts$/.test(file)
         || !fieldsAre(plugin, ["manifest", "start", "stop"])
         || !imported(source, "registerCommand", "@lib/api/commands")) return;
     const start = handler(plugin, "start");
@@ -829,7 +831,16 @@ function compileMobileClientCommands(file, plugin, source) {
         const command = call.arguments[0].expression;
         const name = literal(value(command, "name"));
         if (!fieldsAre(command, ["name", "description", "options", "execute"])) return;
-        if (name === "inrole" && code.includes('findByStoreName("GuildMemberStore")') && code.includes("ApplicationCommandOptionType.ROLE")) {
+        if (name === "schedule" && file.endsWith("/scheduledmessages/index.ts")
+            && createHash("sha256").update(source.text.replaceAll("\r\n", "\n"), "utf8").digest("hex") === "45500d6c98939c8e3f41a81d87b926b7e21db80f5c15529e445c36922509e7cc") {
+            permissions = ["messages.schedule", "reply.local"];
+            lines = ['  on command "schedule":', '    input "message" text', '    input "minutes" integer',
+                '    schedule message "message" after "minutes"'];
+        } else if (name === "translate" && file.endsWith("/translate/index.ts")
+            && createHash("sha256").update(source.text.replaceAll("\r\n", "\n"), "utf8").digest("hex") === "ad6d7a692e8395fbfaf2a1131e3463aefdbf0a3ff2ae535cb1a3fbd74ceb4a6e") {
+            permissions = ["lookup.translate", "reply.local", "messages.send"];
+            lines = ['  on command "translate":', '    input "text" text', '    input "to" text optional', '    translate "text" to "to"'];
+        } else if (name === "inrole" && code.includes('findByStoreName("GuildMemberStore")') && code.includes("ApplicationCommandOptionType.ROLE")) {
             permissions = ["guild.members", "reply.local"];
             lines = ['  on command "inrole":', '    input "role" role', '    reply "${roleMembers(role)}"'];
         } else if (name === "readall" && code.includes("unreadChannels()") && code.includes('type: "BULK_ACK"')) {
@@ -1467,7 +1478,9 @@ function betterDiscordFiles(folder) {
 }
 
 async function fetchReviewedBetterDiscordSources(reviews = reviewedBetterDiscordSources, request = fetch) {
-    const entries = Object.entries(reviews);
+    // Cached reviews still require an exact source hash during a local scan.
+    // Only immutable GitHub file URLs can be fetched automatically.
+    const entries = Object.entries(reviews).filter(([, review]) => review.cachedOnly !== true);
     const sources = [];
     for (let offset = 0; offset < entries.length; offset += 8) {
         const batch = await Promise.all(entries.slice(offset, offset + 8).map(async ([sha256, review]) => {

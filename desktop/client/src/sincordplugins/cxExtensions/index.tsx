@@ -12,7 +12,7 @@ import { CopyIcon, UpArrowIcon } from "@components/Icons";
 import { buildCxRepeatMessage, getCxEmbedToggle, getCxPinAction, getCxSpotifySongName, sortCxReactions, type CxSpotifyActivity } from "@utils/cx";
 import { animateCxAssets, bindCxSocialEvents, createCxPlusReactionHandler, createCxPreviousSendHandler, createCxSession, createCxSplitSender, cxAppearanceTargets, cxProfileMenuActions, CX_INLINE_EDITOR_LIMIT, filterCxEmojiAutocomplete, fixCxFileExtensions, floorCxRelativeTime, formatCxRandomMember, formatCxRoleMembers, formatCxSpotify, getCxProfileMenuCopy, isCxProfileUserId, markCxServersRead, MAX_CX_SOURCE, overrideCxMethods, raiseCxAvatarResolution, reviewCx, runCxFriendInvites, runCxIncomingRules, type CxUploadAnonymiser } from "@utils/cx";
 import { createCxVoicePing, createCxVoiceCount, isCxVoiceCountChannel, isCxVoiceCountFull, type CxVoiceCountChannel } from "@utils/cx";
-import { bindCxCameraTone, createCxVoiceQueue, getCxImageSearchOptions, getCxSteamLink, getCxVoiceQueueRoom, type CxVoiceQueueOptions } from "@utils/cx";
+import { bindCxCameraTone, bindCxMutedVoice, createCxVoiceQueue, getCxImageSearchOptions, getCxSteamLink, getCxVoiceQueueRoom, type CxVoiceQueueOptions } from "@utils/cx";
 import { escapeRegExp } from "@utils/text";
 import { copyToClipboard } from "@utils/clipboard";
 import { getCxChannelNameCopy, getCxProfileMedia } from "@utils/cx";
@@ -30,7 +30,7 @@ import definePlugin from "@utils/types";
 import { findByProps, findComponentByCodeLazy, findStore, waitFor, waitForSubscriptions, wreq } from "@webpack";
 import { ActiveJoinedThreadsStore, ChannelActions, ChannelStore, ComponentDispatch, Constants, EmojiStore, FluxDispatcher, GuildChannelStore, GuildMemberStore, GuildStore, IconUtils, Menu, MessageActions, MessageStore, NavigationRouter, PermissionsBits, PermissionStore, PinActions, PresenceStore, React, ReadStateStore, RelationshipStore, RestAPI, RTCConnectionStore, SelectedChannelStore, SelectedGuildStore, showToast, SpotifyStore, UserProfileStore, UserStore, VoiceStateStore, useRef, useState } from "@webpack/common";
 import type { ReactNode } from "react";
-import { Alerts } from "@webpack/common";
+import { Alerts, MediaEngineStore } from "@webpack/common";
 
 const session = createCxSession();
 const callClock = createCxCallClock();
@@ -744,6 +744,10 @@ export function CxSettings() {
                         case "voice-channel-count":
                             if (!effectOptions || !("showEmpty" in effectOptions)) throw new Error("Missing voice count options");
                             return voiceCounts.bind(VoiceStateStore, effectOptions);
+                        case "notify-when-muted":
+                            if (!effectOptions || !("serverMute" in effectOptions)) throw new Error("Missing mute alert options");
+                            return bindCxMutedVoice(MediaEngineStore, () => Boolean(SelectedChannelStore.getVoiceChannelId()),
+                                () => { playAudio("user_leave"); }, effectOptions);
                         case "webcam-start-notifier":
                             if (!effectOptions || !("scope" in effectOptions)) throw new Error("Missing camera tone options");
                             return bindCxCameraTone({
@@ -1032,6 +1036,20 @@ export function CxSettings() {
                                 inputs: Object.fromEntries(inputs.map(input => [input.name, findOption(args, input.name)])),
                                 sendRequested: optionalSend && findOption<boolean>(args, "send") === true,
                                 reply: message => { if (context.channel?.id) sendBotMessage(context.channel.id, { content: message }); },
+                                prepareChannel() {
+                                    const channelId = context.channel?.id;
+                                    const accountId = UserStore?.getCurrentUser()?.id;
+                                    if (!channelId || !accountId) return;
+                                    const isCurrent = () => UserStore?.getCurrentUser()?.id === accountId;
+                                    return {
+                                        reply(content) { if (isCurrent()) sendBotMessage(channelId, { content }); },
+                                        async send(content) {
+                                            if (!isCurrent()) return;
+                                            if (!ChannelStore?.getChannel(channelId)) throw new Error("The original channel is unavailable");
+                                            await MessageActions.sendMessage(channelId, { content, invalidEmojis: [], validNonShortcutEmojis: [], tts: false });
+                                        },
+                                    };
+                                },
                                 lookup(name, input) {
                                     if (name !== "roleMembers" && name !== "randomMember") return formatCxSpotify(name, input, SpotifyStore?.getTrack?.());
                                     const guild = context.guild?.id ?? context.channel?.guild_id;

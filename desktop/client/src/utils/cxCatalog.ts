@@ -148,6 +148,7 @@ import plugin_catalog_no_server_emojis from "../../../../examples/cx/catalog/plu
 import plugin_catalog_no_typing_animation from "../../../../examples/cx/catalog/plugins/no-typing-animation.cx";
 import plugin_catalog_no_unblock_to_jump from "../../../../examples/cx/catalog/plugins/no-unblock-to-jump.cx";
 import plugin_catalog_normalize_message_links from "../../../../examples/cx/catalog/plugins/normalize-message-links.cx";
+import plugin_catalog_notify_when_muted from "../../../../examples/cx/catalog/plugins/notify-when-muted.cx";
 import plugin_catalog_open_steam_links_in_app from "../../../../examples/cx/catalog/plugins/open-steam-links-in-app.cx";
 import plugin_catalog_ping_notifications from "../../../../examples/cx/catalog/plugins/ping-notifications.cx";
 import plugin_catalog_polish_wording from "../../../../examples/cx/catalog/plugins/polish-wording.cx";
@@ -165,6 +166,7 @@ import plugin_catalog_reverse_image_search from "../../../../examples/cx/catalog
 import plugin_catalog_reverse_text from "../../../../examples/cx/catalog/plugins/reverse-text.cx";
 import plugin_catalog_round_server_icons from "../../../../examples/cx/catalog/plugins/round-server-icons.cx";
 import plugin_catalog_rounded_chat_bar from "../../../../examples/cx/catalog/plugins/rounded-chat-bar.cx";
+import plugin_catalog_scheduled_messages from "../../../../examples/cx/catalog/plugins/scheduled-messages.cx";
 import plugin_catalog_scroll_to_latest from "../../../../examples/cx/catalog/plugins/scroll-to-latest.cx";
 import plugin_catalog_sed_enhanced from "../../../../examples/cx/catalog/plugins/sed-enhanced.cx";
 import plugin_catalog_send_timestamps from "../../../../examples/cx/catalog/plugins/send-timestamps.cx";
@@ -186,6 +188,7 @@ import plugin_catalog_stop_auto_unread from "../../../../examples/cx/catalog/plu
 import plugin_catalog_talk_in_reverse from "../../../../examples/cx/catalog/plugins/talk-in-reverse.cx";
 import plugin_catalog_terezi_typing_quirk from "../../../../examples/cx/catalog/plugins/terezi-typing-quirk.cx";
 import plugin_catalog_text_replace from "../../../../examples/cx/catalog/plugins/text-replace.cx";
+import plugin_catalog_translate from "../../../../examples/cx/catalog/plugins/translate.cx";
 import plugin_catalog_transparent_chat_bar from "../../../../examples/cx/catalog/plugins/transparent-chat-bar.cx";
 import plugin_catalog_unindent from "../../../../examples/cx/catalog/plugins/unindent.cx";
 import plugin_catalog_unit_converter from "../../../../examples/cx/catalog/plugins/unit-converter.cx";
@@ -452,6 +455,7 @@ export const cxCatalog = {
         { name: "NoTypingAnimation", source: plugin_catalog_no_typing_animation },
         { name: "NoUnblockToJump", source: plugin_catalog_no_unblock_to_jump },
         { name: "NormalizeMessageLinks", source: plugin_catalog_normalize_message_links },
+        { name: "NotifyWhenMuted", source: plugin_catalog_notify_when_muted },
         { name: "OpenSteamLinksInApp", source: plugin_catalog_open_steam_links_in_app },
         { name: "PingNotifications", source: plugin_catalog_ping_notifications },
         { name: "PolishWording", source: plugin_catalog_polish_wording },
@@ -469,6 +473,7 @@ export const cxCatalog = {
         { name: "ReverseText", source: plugin_catalog_reverse_text },
         { name: "RoundServerIcons", source: plugin_catalog_round_server_icons },
         { name: "RoundedChatBar", source: plugin_catalog_rounded_chat_bar },
+        { name: "ScheduledMessages", source: plugin_catalog_scheduled_messages },
         { name: "ScrollToLatest", source: plugin_catalog_scroll_to_latest },
         { name: "SedEnhanced", source: plugin_catalog_sed_enhanced },
         { name: "SendTimestamps", source: plugin_catalog_send_timestamps },
@@ -490,6 +495,7 @@ export const cxCatalog = {
         { name: "TalkInReverse", source: plugin_catalog_talk_in_reverse },
         { name: "TereziTypingQuirk", source: plugin_catalog_terezi_typing_quirk },
         { name: "TextReplace", source: plugin_catalog_text_replace },
+        { name: "Translate", source: plugin_catalog_translate },
         { name: "TransparentChatBar", source: plugin_catalog_transparent_chat_bar },
         { name: "Unindent", source: plugin_catalog_unindent },
         { name: "UnitConverter", source: plugin_catalog_unit_converter },

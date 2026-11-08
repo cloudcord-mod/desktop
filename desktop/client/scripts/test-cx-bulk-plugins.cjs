@@ -288,6 +288,7 @@ for (const name of ["ReverseText", "ClapText", "SpaceOut", "Starify", "VibeCheck
     assert.equal(parseCx(port.cx).name, name);
 }
 for (const [key, rule] of Object.entries(cxAppearanceTargets)) {
+    if (rule.desktopOnly) continue;
     const port = matches.find(record => record.name === rule.plugin);
     assert.ok(port, rule.plugin + " should compile from the original stylesheet");
     const document = parseCx(port.cx);
@@ -300,6 +301,8 @@ assert.equal(inspectPlugin("tweak.ts", tweak, "desktop", cxAppearanceTargets).cx
 const styles = [cxAppearanceTargets["bot-tags"].css, cxAppearanceTargets["profile-effects"].css].join("\n");
 const combinedTweak = tweak.replace('"HideBotTags"', '"CompactProfiles"').replace('"body { display: none; }"', JSON.stringify(styles));
 const inspectTweak = code => inspectPlugin("tweak.ts", code, "desktop", cxAppearanceTargets);
+assert.equal(inspectTweak(tweak.replace('"body { display: none; }"',
+    JSON.stringify(cxAppearanceTargets["voice-krisp-button"].css))).cx, undefined);
 const avatarTweak = (name, size) => inspectTweak(tweak.replace('"HideBotTags"', JSON.stringify(name))
     .replace('"body { display: none; }"', JSON.stringify(`[class*="avatar"] { width: ${size}px; height: ${size}px; }`)));
 const avatarBatch = buildBatchPlan([avatarTweak("Larger avatar", 48), avatarTweak("Smaller avatar", 32)]
@@ -531,6 +534,9 @@ async function testReviewedFetch() {
         return new Response(code.replaceAll("\n", "\r\n"));
     });
     assert.deepEqual(fetched, [{ file: "Owner/Repo/folder/Example.plugin.js", code: "reviewed source\r\n", sha256: hash }]);
+    assert.deepEqual(await fetchReviewedBetterDiscordSources({
+        [hash]: { name: "Cached example", source: source.replace(rev, "main"), cachedOnly: true },
+    }, () => { throw new Error("Cached reviews must not perform a download"); }), []);
     await assert.rejects(fetchReviewedBetterDiscordSources(sources, () => new Response("changed")), /hash differs/);
     await assert.rejects(fetchReviewedBetterDiscordSources(sources, () => new Response("", { status: 404 })), /HTTP 404/);
     await assert.rejects(fetchReviewedBetterDiscordSources(sources, () => new Response("x".repeat(512 * 1024 + 1))), /exceeds 512 KiB/);

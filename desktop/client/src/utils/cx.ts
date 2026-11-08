@@ -1,5 +1,5 @@
 import { cxAppearanceTargets, type CxAppearanceTarget, type CxHideTarget, type CxStyleTarget } from "./cxAppearance";
-import { cxClientFunctions, cxExternalLookups, type CxClientFunction, type CxExternalLookup, type CxFriendInviteAction } from "./cxClientCommands";
+import { cxClientFunctions, cxExternalLookups, translateCxText, type CxClientFunction, type CxExternalLookup, type CxFriendInviteAction } from "./cxClientCommands";
 import { chooseOne, cxCommandFunctions } from "./cxCommandFunctions";
 import { applyIncomingRule, incomingPermissions, type IncomingPayload, type IncomingRule, parseIncomingRule } from "./cxIncoming";
 import { calculate, convertUnits } from "./cxNumeric";
@@ -12,6 +12,7 @@ import { cxCalendarPeriods, cxTimestampSurfaces, type CxTimestampFormats, type C
 import { createCxUploadAnonymiser, type CxUploadAnonymiser, type CxUploadNaming } from "./cxUploadNames";
 import type { CxVoiceCountOptions } from "./cxVoiceCount";
 import type { CxCameraToneOptions } from "./cxCameraTone";
+import type { CxMutedVoiceOptions } from "./cxMutedVoice";
 import type { CxVoiceQueueOptions } from "./cxVoiceQueue";
 import type { CxVoiceMemberOptions } from "./cxVoiceMemberClock";
 import { validateCxWallpaper } from "./cxWallpaper";
@@ -34,6 +35,7 @@ export { getCxImageSearchOptions, type CxSearchMediaSource } from "./cxMediaSear
 export { getCxGifDescription, getCxImageTitle } from "./cxMediaLabels";
 export { createCxTimestampRegistry, type CxTimestampFormats, type CxTimestampSurface } from "./cxTimestamps";
 export { createCxVoicePing } from "./cxVoicePing";
+export { bindCxMutedVoice } from "./cxMutedVoice";
 export { createCxVoiceCount, isCxVoiceCountChannel, isCxVoiceCountFull, type CxVoiceCountChannel, type CxVoiceCountOptions } from "./cxVoiceCount";
 export { bindCxCameraTone, type CxCameraToneOptions } from "./cxCameraTone";
 export { createCxVoiceQueue, getCxVoiceQueueRoom, type CxVoiceQueueOptions } from "./cxVoiceQueue";
@@ -51,6 +53,7 @@ const permissionLabels = {
     "ui.toast": "Show local popups",
     "reply.local": "Show a command reply visible only to you",
     "messages.send": "Send the result to the current chat when you run a listed command",
+    "messages.schedule": "Send text to the same chat later when you run a listed command",
     "messages.split": "Send your long drafts as separate messages in the same channel",
     "emoji.clipboard": "Copy the selected emoji as Markdown when you choose its menu action",
     "media.search": "Share the selected image URL with the search engine you choose",
@@ -101,6 +104,7 @@ const permissionLabels = {
     "voice.latency": "Read your current voice connection latency",
     "voice.channelcount": "Show the number of connected users next to visible voice and stage channels",
     "voice.cameratone": "Play local sounds when camera state changes in your current voice call",
+    "voice.mutedtone": "Read Discord's local speaking-while-muted flag and play a local alert",
     "voice.waitslot": "Watch a voice channel you queue for and join when you confirm or enable auto-join",
     "voice.membertime": "Use voice updates already loaded by Discord to show member call times on this device",
     "voice.calltime": "Read the current voice channel and show its elapsed call time on this device",
@@ -114,6 +118,7 @@ const permissionLabels = {
     "typing.suppress": "Suppress your outgoing typing indicator",
     "notifications.preventautoupgrade": "Prevent Discord from automatically changing a channel to All Messages notifications",
     "lookup.wikipedia": "Send the title you enter to English Wikipedia when you run the lookup command",
+    "lookup.translate": "Send the text and language you enter to Google Translate when you run the translate command",
     "diagnostics.copy": "Copy a local report of Discord module names and return types when you run the diagnostic command",
 };
 
@@ -143,6 +148,8 @@ export type CxPermission = keyof typeof permissionLabels;
 type BasicAction = { kind: "toast" | "reply" | "send" | "reply or send" | "mark-read"; message: string; fallback?: string; choices?: string[] };
 type Action = BasicAction | { kind: "friend-invites"; operation: CxFriendInviteAction }
     | { kind: "copy-diagnostics"; }
+    | { kind: "schedule-message"; text: string; minutes: string; }
+    | { kind: "translate"; text: string; target: string; }
     | { kind: "upload-spoilers"; input: string; }
     | { kind: "lookup"; service: CxExternalLookup; input: string; };
 const actionPermissions: Record<BasicAction["kind"], CxPermission[]> = {
@@ -155,7 +162,9 @@ const actionPermissions: Record<BasicAction["kind"], CxPermission[]> = {
 const getActionPermissions = (action: Action): CxPermission[] => action.kind === "friend-invites"
     ? ["reply.local", `friends.invites.${action.operation}`]
     : action.kind === "lookup" ? ["reply.local", cxExternalLookups[action.service].permission]
+        : action.kind === "translate" ? ["reply.local", "lookup.translate", "messages.send"]
         : action.kind === "copy-diagnostics" ? ["reply.local", "diagnostics.copy"]
+            : action.kind === "schedule-message" ? ["reply.local", "messages.schedule"]
             : action.kind === "upload-spoilers" ? ["reply.local", "uploads.rename"] : actionPermissions[action.kind];
 const sendsMessage = (action: Action) => action.kind === "send" || action.kind === "reply or send";
 type CommandInput = { name: string; type: "text" | "integer" | "boolean" | "choice" | "user" | "role"; required: boolean; choices?: string[] };
@@ -184,7 +193,7 @@ export type CxTheme = {
     semanticColors?: Record<string, string>;
     rawColors?: Record<string, string>;
 };
-type CxNativeOptions = CxVoiceMemberOptions | CxVoiceQueueOptions | CxCameraToneOptions | CxVoiceCountOptions;
+type CxNativeOptions = CxVoiceMemberOptions | CxVoiceQueueOptions | CxCameraToneOptions | CxVoiceCountOptions | CxMutedVoiceOptions;
 
 type CxPlugin = {
     kind: "plugin";
@@ -203,6 +212,7 @@ type CxPlugin = {
     voiceMemberOptions?: CxVoiceMemberOptions;
     voiceQueueOptions?: CxVoiceQueueOptions;
     cameraToneOptions?: CxCameraToneOptions;
+    mutedVoiceOptions?: CxMutedVoiceOptions;
     voiceCountOptions?: CxVoiceCountOptions;
     uploadNaming?: CxUploadNaming;
     previousRule?: CxPreviousRule;
@@ -292,6 +302,7 @@ export function parseCx(source: string): CxDocument {
     let avatarResolution: CxAvatarResolution | undefined;
     let voiceMemberOptions: CxVoiceMemberOptions | undefined;
     let voiceQueueOptions: CxVoiceQueueOptions | undefined;
+    let mutedVoiceOptions: CxMutedVoiceOptions | undefined;
     let cameraToneOptions: CxCameraToneOptions | undefined;
     let voiceCountOptions: CxVoiceCountOptions | undefined;
     let uploadNaming: CxUploadNaming | undefined;
@@ -406,6 +417,16 @@ export function parseCx(source: string): CxDocument {
                 if (scope !== "all" && scope !== "dm-only" && scope !== "server-only")
                     throw new Error("Choose all, dm-only, or server-only camera notifications");
                 cameraToneOptions = { scope };
+            } else if (name === "notify-when-muted") {
+                const flags = effect[2]?.split(" ") ?? [];
+                const delays = flags.filter(flag => /^cooldown-(?:[1-9]|[1-5]\d|60)$/.test(flag));
+                if (delays.length > 1 || new Set(flags).size !== flags.length
+                    || flags.some(flag => flag !== "server-mute" && flag !== "ignore-deafened" && !delays.includes(flag)))
+                    throw new Error("Mute alert options are server-mute, ignore-deafened, and cooldown-1 through cooldown-60");
+                mutedVoiceOptions = {
+                    serverMute: flags.includes("server-mute"), ignoreDeafened: flags.includes("ignore-deafened"),
+                    cooldownSeconds: delays.length ? Number(delays[0].slice(9)) : 5,
+                };
             } else if (name === "voice-channel-count") {
                 const flags = effect[2]?.split(" ") ?? [];
                 if (flags.some(flag => !["show-empty", "hide-limit"].includes(flag)) || new Set(flags).size !== flags.length)
@@ -533,6 +554,22 @@ export function parseCx(source: string): CxDocument {
             current = undefined;
             continue;
         }
+        const schedule = /^    schedule message "([a-z][a-z0-9_-]{0,31})" after "([a-z][a-z0-9_-]{0,31})"$/.exec(line);
+        if (schedule && current && !current.actions.length && !current.text && current.inputs.length === 2
+            && current.inputs.some(input => input.name === schedule[1] && input.type === "text" && input.required)
+            && current.inputs.some(input => input.name === schedule[2] && input.type === "integer" && input.required)) {
+            current.actions.push({ kind: "schedule-message", text: schedule[1], minutes: schedule[2] });
+            current = undefined;
+            continue;
+        }
+        const translation = /^    translate "([a-z][a-z0-9_-]{0,31})" to "([a-z][a-z0-9_-]{0,31})"$/.exec(line);
+        if (translation && current && !current.actions.length && !current.text && current.inputs.length === 2
+            && current.inputs.some(input => input.name === translation[1] && input.type === "text" && input.required)
+            && current.inputs.some(input => input.name === translation[2] && input.type === "text" && !input.required)) {
+            current.actions.push({ kind: "translate", text: translation[1], target: translation[2] });
+            current = undefined;
+            continue;
+        }
         const spoilers = /^    set upload spoilers "([a-z][a-z0-9_-]{0,31})"$/.exec(line);
         if (spoilers && uploadNaming && current && !current.actions.length && !current.text && current.inputs.length === 1
             && current.inputs[0].name === spoilers[1] && current.inputs[0].type === "boolean") {
@@ -631,7 +668,7 @@ export function parseCx(source: string): CxDocument {
         throw new Error("Remove unused CX permissions");
     return {
         kind: "plugin", name, commands, permissions: [...permissions], messageTransforms: transforms, sendConfirmation, suppressReplyPing,
-        hiddenTargets: [...hiddenTargets], optionalHides, styledTargets: [...styledTargets], timestamps, nativeEffects: [...nativeEffects], avatarResolution, voiceMemberOptions, voiceQueueOptions, cameraToneOptions, voiceCountOptions, uploadNaming, previousRule, profileActions: [...profileActions], incoming,
+        hiddenTargets: [...hiddenTargets], optionalHides, styledTargets: [...styledTargets], timestamps, nativeEffects: [...nativeEffects], avatarResolution, voiceMemberOptions, voiceQueueOptions, cameraToneOptions, mutedVoiceOptions, voiceCountOptions, uploadNaming, previousRule, profileActions: [...profileActions], incoming,
     };
 }
 
@@ -688,6 +725,7 @@ type Invocation = {
     markServersRead?: () => string;
     friendInvites?: (operation: CxFriendInviteAction) => Promise<string>;
     copyDiagnostics?: () => Promise<string>;
+    prepareChannel?: () => { reply: (message: string) => void; send: (message: string) => Promise<void>; } | undefined;
 };
 type CxHost = {
     registerCommand: (name: string, execute: (invocation?: Invocation) => string | undefined, acceptsText: boolean, sendsMessage: boolean, optionalSend: boolean, inputs: readonly CommandInput[]) => () => void;
@@ -744,7 +782,8 @@ function bindCx(source: string, host: CxHost, approved: readonly CxPermission[],
 
     const cleanups: (() => void)[] = [];
     const optionCleanups = new Map<CxHideTarget, () => void>();
-    const activeLookups = new Map<CxExternalLookup, AbortController>();
+    const activeLookups = new Map<CxExternalLookup | "translate", AbortController>();
+    const scheduled = new Set<ReturnType<typeof setTimeout>>();
     let active = true;
     const uploadAnonymiser = document.uploadNaming && createCxUploadAnonymiser(document.uploadNaming);
     function hideTarget(target: CxHideTarget) {
@@ -763,6 +802,8 @@ function bindCx(source: string, host: CxHost, approved: readonly CxPermission[],
     }
     function stop() {
         active = false;
+        for (const timer of scheduled) clearTimeout(timer);
+        scheduled.clear();
         for (const controller of activeLookups.values()) controller.abort();
         activeLookups.clear();
         const callbacks = [...cleanups.splice(0), ...optionCleanups.values()].reverse();
@@ -812,6 +853,7 @@ function bindCx(source: string, host: CxHost, approved: readonly CxPermission[],
             "all-call-time-counter": document.voiceMemberOptions,
             "wait-for-slot": document.voiceQueueOptions,
             "webcam-start-notifier": document.cameraToneOptions,
+            "notify-when-muted": document.mutedVoiceOptions,
             "voice-channel-count": document.voiceCountOptions,
         };
         for (const effect of document.nativeEffects) {
@@ -877,6 +919,59 @@ function bindCx(source: string, host: CxHost, approved: readonly CxPermission[],
                 let outgoing: string | undefined;
                 for (const action of command.actions) {
                     if (!getActionPermissions(action).every(permission => grants.has(permission))) continue;
+                    if (action.kind === "schedule-message") {
+                        const reply = invocation?.reply;
+                        if (!reply) continue;
+                        const content = inputs.get(action.text)!;
+                        const minutes = Number(inputs.get(action.minutes));
+                        if (minutes < 1 || minutes > 1440) {
+                            reply("Choose a delay from 1 to 1440 minutes.");
+                            continue;
+                        }
+                        if (scheduled.size >= 20) {
+                            reply("This plugin already has 20 pending messages.");
+                            continue;
+                        }
+                        const channel = invocation.prepareChannel?.();
+                        if (!channel) {
+                            reply("Scheduling is unavailable in this chat.");
+                            continue;
+                        }
+                        const delay = minutes * 60_000;
+                        const timer = setTimeout(() => {
+                            scheduled.delete(timer);
+                            if (!active) return;
+                            void channel.send(content).catch(() => { if (active) channel.reply("Couldn’t send the scheduled message."); });
+                        }, delay);
+                        scheduled.add(timer);
+                        reply("Scheduled for <t:" + Math.floor((Date.now() + delay) / 1000) + ":t>. Keep CloudCord open until then.");
+                        continue;
+                    }
+                    if (action.kind === "translate") {
+                        const channel = invocation?.prepareChannel?.();
+                        if (!channel || activeLookups.has("translate")) continue;
+                        const target = inputs.get(action.target)!.trim().toLowerCase() || "en";
+                        if (!/^[a-z]{2,3}(?:-[a-z]{2,8})?$/.test(target)) {
+                            channel.reply("Enter a language code such as en, fr or zh-cn.");
+                            continue;
+                        }
+                        const controller = new AbortController();
+                        activeLookups.set("translate", controller);
+                        const timer = setTimeout(() => controller.abort(), 8000);
+                        const send = invocation?.sendRequested === true;
+                        void translateCxText(inputs.get(action.text)!, target, controller.signal).then(({ translated, language }) => {
+                            if (!active || controller.signal.aborted) return;
+                            const text = translated.replace(/<@|@(?=everyone\b|here\b)/gi, match => match.replace("@", "＠"));
+                            if (send) return channel.send(text);
+                            channel.reply("**Translated from " + language + ":** " + text);
+                        }).catch(() => {
+                            if (active) channel.reply(send ? "Couldn’t translate or send the text." : "Couldn’t translate the text. Try again.");
+                        }).finally(() => {
+                            clearTimeout(timer);
+                            activeLookups.delete("translate");
+                        });
+                        continue;
+                    }
                     if (action.kind === "lookup") {
                         const reply = invocation?.reply;
                         if (!reply || activeLookups.has(action.service)) continue;
@@ -953,7 +1048,8 @@ function bindCx(source: string, host: CxHost, approved: readonly CxPermission[],
                     else if ((!command.text || text.trim()) && message.trim()) outgoing = message;
                 }
                 return outgoing;
-            }, command.text, command.actions.some(sendsMessage), command.actions.some(action => action.kind === "reply or send"), command.inputs));
+            }, command.text, command.actions.some(sendsMessage),
+            command.actions.some(action => action.kind === "reply or send" || action.kind === "translate"), command.inputs));
         }
         return { stop, setAppearanceOption, isAppearanceOptionEnabled: target => optionCleanups.has(target) };
     } catch (error) {
