@@ -1,0 +1,406 @@
+/*
+ * Vencord, a modification for Discord's desktop app
+ * Copyright (c) 2022 Vendicated and contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
+
+import ErrorBoundary from "@components/ErrorBoundary";
+import { TooltipContainer } from "@components/TooltipContainer";
+import globalBadges from "@sincordplugins/globalBadges";
+import BadgeAPIPlugin from "@plugins/_api/badges";
+import { React, Toasts, UserProfileStore } from "@webpack/common";
+import { ComponentType, HTMLProps } from "react";
+import Plugins from "~plugins";
+import { isRealProfileView } from "@utils/realProfileView";
+import { Logger } from "@utils/Logger";
+
+import { isPluginEnabled } from "./PluginManager";
+
+export const enum BadgePosition {
+    START,
+    END
+}
+
+export interface ProfileBadge {
+    /**
+     * Badge id, unused by vencord, required by discord
+     */
+    id: string,
+    /** The tooltip to show on hover. Required for image badges */
+    description?: string;
+    /** Custom component for the badge (tooltip not included) */
+    component?: ComponentType<ProfileBadge & BadgeUserArgs>;
+    /** The custom image to use */
+    iconSrc?: string;
+    link?: string;
+    /** Action to perform when you click the badge */
+    onClick?(event: React.MouseEvent, props: ProfileBadge & BadgeUserArgs): void;
+    /** Action to perform when you right click the badge */
+    onContextMenu?(event: React.MouseEvent, props: BadgeUserArgs & BadgeUserArgs): void;
+    /** Should the user display this badge? */
+    shouldShow?(userInfo: BadgeUserArgs): boolean;
+    /** Optional props (e.g. style) for the badge, ignored for component badges */
+    props?: HTMLProps<HTMLImageElement>;
+    /** Insert at start or end? */
+    position?: BadgePosition;
+    /** The badge name to display, Discord uses this. Required for component badges */
+    key?: string;
+
+    /**
+     * Allows dynamically returning multiple badges.
+     * Must not call hooks
+     */
+    getBadges?(userInfo: BadgeUserArgs): ProfileBadge[];
+}
+
+const Badges = new Set<ProfileBadge>();
+const failedBadgeSources = new WeakSet<object>();
+type BadgeComponent = NonNullable<ProfileBadge["component"]>;
+const guardedBadgeComponents = new WeakMap<BadgeComponent, BadgeComponent>();
+
+function guardBadgeComponent(component: BadgeComponent): BadgeComponent {
+    const cached = guardedBadgeComponents.get(component);
+    if (cached) return cached;
+    const wrapped = ErrorBoundary.wrap(component, { noop: true });
+    guardedBadgeComponents.set(component, wrapped);
+    guardedBadgeComponents.set(wrapped, wrapped);
+    return wrapped;
+}
+
+function readBadgeSource(source: object, load: () => unknown): ProfileBadge[] {
+    try {
+        const rows = load();
+        if (rows == null || rows === false) return [];
+        if (!Array.isArray(rows)) throw new Error("Badge source did not return an array");
+        return rows.filter((row): row is ProfileBadge => row && typeof row === "object" && !Array.isArray(row) && typeof row.id === "string" && row.id.length > 0);
+    } catch (error) {
+        if (!failedBadgeSources.has(source)) {
+            failedBadgeSources.add(source);
+            new Logger("BadgeAPI").warn("Skipped a failed badge source; other profile badges remain available", error);
+        }
+        return [];
+    }
+}
+
+export const CLOUDCORD_STAFF_ROLES: Record<string, string> = {
+    "463515440606609419": "Founder",
+    "1417880742502994042": "Chief of staff",
+    "1394648991223779328": "Management Supervisor",
+    "1526004298020950075": "Management Supervisor",
+    "1540350369232850995": "Manager",
+    "1497588725788442637": "Manager",
+    "1330236504198611029": "Social Media Manager",
+    "1191456523763859558": "Admin",
+    "1457121276748365989": "Admin",
+    "1465007041390317579": "Admin",
+    "1470732628461359251": "Lead of Support",
+    "553936745058664458": "Mod",
+    "1073445426025480202": "Mod",
+    "1141922991622586418": "Mod",
+    "1495382175158243440": "Mod",
+    "562677177779224588": "Trial Moderator",
+    "673898407601111059": "Trial Moderator",
+    "1416192374895542455": "Trial Moderator",
+    "1440072683969839235": "Trial Moderator",
+    "1540703692133634183": "Trial Moderator",
+    "1560310951805321359": "Trial Moderator",
+    "551069589983854603": "Senior Support",
+    "257020965756731403": "Support",
+    "1069892245823692871": "Support",
+    "1186647886608478260": "Support",
+    "1560496375710613514": "Support"
+};
+const CLOUDCORD_BADGE_ICON = "https://raw.githubusercontent.com/cloudcord-mod/cloudcord/main/cloudcord-favicon.png";
+
+function createOfficialCloudBadgeIcon(badge: ProfileBadge & BadgeUserArgs) {
+    // Choose the higher contrast of true black/white for every RGB hue.
+    const useBlack = (colors: number[][]) => {
+        const luminance = colors.reduce((total, rgb) => {
+            const linear = rgb.slice(0, 3).map(value => {
+                const channel = Math.max(0, Math.min(255, value)) / 255;
+                return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+            });
+            return total + linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+        }, 0) / colors.length;
+        return (luminance + 0.05) / 0.05 >= 1.05 / (luminance + 0.05);
+    };
+    const parseColor = (value: string): number[] | null => {
+        if (!value || value === "transparent") return null;
+        // CSS Color 4 uses normalized channels (color(srgb ...)) or Lab
+        // coordinates, not 0..255 RGB. Let Chromium convert those spaces.
+        if (!/^rgba?\(/i.test(value)) {
+            if (!CSS.supports("color", value)) return null;
+            const canvas = document.createElement("canvas");
+            canvas.width = canvas.height = 1;
+            const context = canvas.getContext("2d", { willReadFrequently: true });
+            if (!context) return null;
+            context.fillStyle = value;
+            context.fillRect(0, 0, 1, 1);
+            const [r, g, b, a] = context.getImageData(0, 0, 1, 1).data;
+            return a > 127 ? [r, g, b, a / 255] : null;
+        }
+        const channels = value.match(/[\d.]+%?/g);
+        if (!channels || channels.length < 3) return null;
+        const rgb = channels.map((channel, index) => parseFloat(channel) * (channel.endsWith("%") ? (index < 3 ? 2.55 : 0.01) : 1));
+        return rgb.length < 4 || rgb[3] > 0.5 ? rgb : null;
+    };
+    const label = badge.description || "CloudCord Staff";
+    const profile: any = UserProfileStore?.getUserProfile(badge.userId);
+    const profileColors: number[] = (profile?.themeColors ?? profile?.theme_colors ?? []).filter((color: unknown) => typeof color === "number");
+    const brightness = profileColors.length ? profileColors.reduce((sum, color) => sum + ((color >> 16) & 255) * 0.299 + ((color >> 8) & 255) * 0.587 + (color & 255) * 0.114, 0) / profileColors.length : null;
+    let themeObserver: MutationObserver | null = null;
+    const icon = React.createElement("img", {
+        src: CLOUDCORD_BADGE_ICON + "?v=staff3", alt: label, width: 20, height: 20,
+        role: "button", tabIndex: 0,
+        onClick: () => showStaffRole(label),
+        onKeyDown: (event: React.KeyboardEvent) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); showStaffRole(label); } },
+        style: { objectFit: "contain", filter: "invert(1)", background: "transparent", border: "none", boxShadow: "none", cursor: "pointer" },
+        ref: (image: HTMLImageElement | null) => {
+            themeObserver?.disconnect();
+            themeObserver = null;
+            if (!image) return;
+            // Discord draws a translucent overlay (dark in dark theme, light in light theme)
+            // over custom profile colours, so the colour behind the badge is the blend, not the
+            // raw profile colour. Without this a light profile colour in dark theme gave a black
+            // badge on a dark card.
+            const behindOverlay = (rgb: number[]) => {
+                let node: HTMLElement | null = image.parentElement;
+                while (node) {
+                    const overlay = parseColor(getComputedStyle(node).getPropertyValue("--profile-gradient-overlay-color").trim());
+                    if (overlay) {
+                        const alpha = overlay.length >= 4 ? overlay[3] : 1;
+                        return [0, 1, 2].map(i => rgb[i] * (1 - alpha) + overlay[i] * alpha);
+                    }
+                    node = node.parentElement;
+                }
+                return rgb;
+            };
+            const update = () => {
+            if (!image.isConnected) return;
+            const apply = (black: boolean) => {
+                const filter = black ? "brightness(0)" : "brightness(0) invert(1)";
+                if (image.style.setProperty) image.style.setProperty("filter", filter, "important");
+                else image.style.filter = filter;
+            };
+            // An active custom profile overrides Discord's original text/theme.
+            // Read the same per-user data that FakeProfile actually renders.
+            const profilePlugin = Plugins.ProfileSpoofer as { started?: boolean; getActiveProfileColors?(userId: string): number[] | null; } | undefined;
+            const editedColors: number[] | null = profilePlugin?.started ? (profilePlugin.getActiveProfileColors?.(badge.userId) ?? null) : null;
+            if (editedColors?.length) {
+                // Discord themes the profile from the primary colour, so contrast with that one.
+                apply(useBlack(editedColors.slice(0, 1).map(color => behindOverlay([(color >> 16) & 255, (color >> 8) & 255, color & 255]))));
+                return;
+            }
+            // Prefer the rendered surface near the badge, not globally inherited
+            // text variables (the account popout can have muted/light text).
+            let surface = image.parentElement;
+            while (surface) {
+                const style = getComputedStyle(surface);
+                const gradientColors = [...(style.backgroundImage || "").matchAll(/(?:rgba?|color|oklab|oklch|lab|lch)\([^)]*\)/g)].map(match => parseColor(match[0])).filter((color): color is number[] => color !== null);
+                if (gradientColors.length) {
+                    apply(useBlack(gradientColors.slice(0, 1).map(behindOverlay)));
+                    return;
+                }
+                const background = parseColor(style.backgroundColor);
+                if (background && (background.length < 4 || background[3] >= 0.9) && (!style.backgroundImage || style.backgroundImage === "none")) {
+                    apply(useBlack([background]));
+                    return;
+                }
+                surface = surface.parentElement;
+            }
+            // Use Discord's own readable profile foreground. A gradient's
+            // average is not the color behind the badge, and account popouts
+            // can inherit stale colors while their portal is being mounted.
+            let foregroundNode = image.parentElement;
+            while (foregroundNode) {
+                const style = getComputedStyle(foregroundNode);
+                // No store exposes the colour Discord actually painted, so read it from the DOM.
+                // The partial class match is a best-effort hint; the walk falls back to --text-normal.
+                const username = foregroundNode.querySelector<HTMLElement>('[class*="userTagUsername"], [class*="username"]');
+                if (username) {
+                    const rgb = parseColor(getComputedStyle(username).color);
+                    if (rgb && rgb.length >= 3 && (rgb.length < 4 || rgb[3] > 0.5)) {
+                        apply(!useBlack([rgb]));
+                        return;
+                    }
+                }
+                const text = style.getPropertyValue("--text-normal").trim();
+                if (text) {
+                    const probe = document.createElement("span");
+                    probe.style.color = "var(--text-normal)";
+                    probe.style.display = "none";
+                    foregroundNode.appendChild(probe);
+                    const rgb = parseColor(getComputedStyle(probe).color);
+                    probe.remove();
+                    if (rgb && rgb.length >= 3 && (rgb.length < 4 || rgb[3] > 0.5)) {
+                        const lightText = rgb[0] * 0.299 + rgb[1] * 0.587 + rgb[2] * 0.114 > 180;
+                        apply(!lightText);
+                        return;
+                    }
+                }
+                foregroundNode = foregroundNode.parentElement;
+            }
+            // The visible surface wins over cached profile theme colors.
+            // Discord can render a light profile while the store still holds
+            // its previous/dark colors (especially in the account popout).
+            let node = image.parentElement;
+            while (node) {
+                const style = getComputedStyle(node);
+                // Discord uses space-separated rgb() and transparent gradient
+                // overlays; neither should be mistaken for a dark surface.
+                const stops = [...style.backgroundImage.matchAll(/(?:rgba?|color|oklab|oklch|lab|lch)\([^)]*\)/g)].map(match => parseColor(match[0])).filter((color): color is number[] => color !== null);
+                if (stops.length) {
+                    apply(useBlack(stops));
+                    return;
+                }
+                const color = parseColor(style.backgroundColor);
+                if (color) {
+                    apply(useBlack([color]));
+                    return;
+                }
+                node = node.parentElement;
+            }
+            if (brightness !== null) apply(useBlack(profileColors.map(color => [(color >> 16) & 255, (color >> 8) & 255, color & 255])));
+            };
+            // Hover and animation change ancestor classes many times a second; check at most once per frame.
+            let queued = false;
+            const scheduleUpdate = () => { if (queued) return; queued = true; requestAnimationFrame(() => { queued = false; update(); }); };
+            update();
+            // Refs may fire before a portal's final inherited theme is applied.
+            requestAnimationFrame(() => { update(); requestAnimationFrame(update); });
+            image.onload = scheduleUpdate;
+            // Profile themes can arrive after the first frames, or change while
+            // the popout stays open. Watch inherited theme attributes, not the
+            // image's own filter, to avoid an observer feedback loop.
+            if (typeof MutationObserver !== "undefined") {
+                themeObserver = new MutationObserver(scheduleUpdate);
+                let ancestor = image.parentElement;
+                while (ancestor) {
+                    themeObserver.observe(ancestor, { attributes: true, attributeFilter: ["class", "style", "data-theme"] });
+                    ancestor = ancestor.parentElement;
+                }
+            }
+        }
+    });
+    return icon;
+}
+
+function OfficialCloudBadge(badge: ProfileBadge & BadgeUserArgs) {
+    return React.createElement(TooltipContainer, { text: badge.description || "CloudCord Staff", children: createOfficialCloudBadgeIcon(badge) });
+}
+
+function showStaffRole(label: string) {
+    Toasts.show({ id: Toasts.genId(), message: label, type: Toasts.Type.MESSAGE });
+}
+
+/**
+ * Register a new badge with the Badges API
+ * @param badge The badge to register
+ */
+export function addProfileBadge(badge: ProfileBadge) {
+    badge.component &&= guardBadgeComponent(badge.component);
+    Badges.add(badge);
+}
+
+/**
+ * Unregister a badge from the Badges API
+ * @param badge The badge to remove
+ */
+export function removeProfileBadge(badge: ProfileBadge) {
+    return Badges.delete(badge);
+}
+
+/**
+ * Inject badges into the profile badges array.
+ * You probably don't need to use this.
+ */
+export function _getBadges(args: BadgeUserArgs) {
+    if (isRealProfileView(args.userId)) return [];
+    // Private profiles: like Discord, badges are only shown to friends.
+    const profilePlugin = Plugins.ProfileSpoofer as { started?: boolean; badgesHiddenFor?(userId: string): boolean; } | undefined;
+    if (profilePlugin?.started && profilePlugin.badgesHiddenFor?.(args.userId)) return [];
+    const badges = [] as ProfileBadge[];
+    for (const badge of Badges) {
+        const b = readBadgeSource(badge, () => {
+            if (badge.shouldShow && !badge.shouldShow(args)) return [];
+            return badge.getBadges ? badge.getBadges(args) : [badge];
+        }).map(badge => ({
+            ...args,
+            ...badge,
+            component: badge.component && guardBadgeComponent(badge.component)
+        }));
+
+        if (badge.position === BadgePosition.START) {
+            badges.unshift(...b);
+        } else {
+            badges.push(...b);
+        }
+    }
+
+    const staffRole = CLOUDCORD_STAFF_ROLES[args.userId];
+    if (staffRole) {
+        badges.unshift({
+            ...args,
+            id: `cloudcord-official-${staffRole.toLowerCase()}`,
+            description: `CloudCord ${staffRole}`,
+            // Keep Discord's native image path usable if its component renderer changes.
+            iconSrc: CLOUDCORD_BADGE_ICON,
+            props: createOfficialCloudBadgeIcon({ ...args, id: `cloudcord-official-${staffRole.toLowerCase()}`, description: `CloudCord ${staffRole}` }).props,
+            onClick: () => showStaffRole(`CloudCord ${staffRole}`),
+            component: OfficialCloudBadge,
+            key: `CloudCord ${staffRole}`,
+            position: BadgePosition.START
+        });
+    }
+
+    const donorBadges = readBadgeSource(BadgeAPIPlugin, () => BadgeAPIPlugin.getDonorBadges(args.userId));
+    const sincordDonorBadges = readBadgeSource(BadgeAPIPlugin, () => BadgeAPIPlugin.getSincordDonorBadges(args.userId));
+    const GlobalBadges = readBadgeSource(globalBadges, () => isPluginEnabled(globalBadges.name) ? globalBadges.getGlobalBadges(args.userId) : []);
+
+    // do globalbadges first so it shows before the contrib badges but after donor badges
+    if (GlobalBadges) {
+        badges.unshift(
+            ...GlobalBadges.map(badge => ({
+                ...args,
+                ...badge,
+            }))
+        );
+    }
+
+    if (donorBadges) {
+        badges.unshift(
+            ...donorBadges.map(badge => ({
+                ...args,
+                ...badge,
+            }))
+        );
+    }
+
+    if (sincordDonorBadges) {
+        badges.unshift(
+            ...sincordDonorBadges.map(badge => ({
+                ...args,
+                ...badge,
+            }))
+        );
+    }
+
+    return badges;
+}
+
+export interface BadgeUserArgs {
+    userId: string;
+    guildId: string;
+}
